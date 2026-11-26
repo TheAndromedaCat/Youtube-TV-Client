@@ -8,6 +8,9 @@
         MinWidth="640"
         MinHeight="360"
         WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        WindowState="Maximized"
         Background="#0F0F0F">
     <Grid Background="#0F0F0F">
         <TextBlock x:Name="LoadingText"
