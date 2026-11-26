@@ -11,7 +11,7 @@
     <ApplicationIcon>..\Assets\TubeTV.ico</ApplicationIcon>
     <Product>TubeTV - Client for YouTube TV</Product>
     <Description>Unofficial YouTube TV desktop client for Windows PCs, couch PCs, and handheld gaming devices</Description>
-    <Version>2.0.1</Version>
+    <Version>2.0.2</Version>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>

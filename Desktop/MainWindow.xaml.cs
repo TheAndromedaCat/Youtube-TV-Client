@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
@@ -19,9 +21,83 @@ namespace Youtube_TV.Desktop
         private const string YoutubeTvUrl = "https://www.youtube.com/tv#/";
         private const string SmartTvUserAgent = "Mozilla/5.0 (WebOS; SmartTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.5283.0 Safari/537.36";
 
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GuiThreadInfo
+        {
+            public int cbSize;
+            public int flags;
+            public IntPtr hwndActive;
+            public IntPtr hwndFocus;
+            public IntPtr hwndCapture;
+            public IntPtr hwndMenuOwner;
+            public IntPtr hwndMoveSize;
+            public IntPtr hwndCaret;
+            public NativeRect rcCaret;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetGUIThreadInfo(uint idThread, ref GuiThreadInfo lpgui);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetFocus(IntPtr hWnd);
+
         private readonly DesktopGamepadService _gamepadService;
         private readonly Dictionary<int, int> _heldVirtualKeyCounts = new Dictionary<int, int>();
 
+        private IntPtr _windowHandle = IntPtr.Zero;
+        private bool _isClosed;
         private bool _isFullscreen = true;
         private WindowStyle _restoreStyle = WindowStyle.SingleBorderWindow;
         private WindowState _restoreState = WindowState.Normal;
@@ -53,8 +129,8 @@ namespace Youtube_TV.Desktop
 
         private void MainWindow_SourceInitialized(object sender, EventArgs e)
         {
-            IntPtr hwnd = new WindowInteropHelper(this).Handle;
-            _gamepadService.AttachWindow(hwnd);
+            _windowHandle = new WindowInteropHelper(this).Handle;
+            _gamepadService.AttachWindow(_windowHandle);
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -67,7 +143,7 @@ namespace Youtube_TV.Desktop
         private void MainWindow_Activated(object sender, EventArgs e)
         {
             _gamepadService.NotifyWindowFocusHint();
-            FocusWebView();
+            ForceFocusWebView();
         }
 
         private void MainWindow_Deactivated(object sender, EventArgs e)
@@ -77,6 +153,7 @@ namespace Youtube_TV.Desktop
 
         private void MainWindow_Closed(object sender, EventArgs e)
         {
+            _isClosed = true;
             _gamepadService.ActionTriggered -= GamepadService_ActionTriggered;
             _gamepadService.ForegroundChanged -= GamepadService_ForegroundChanged;
             _gamepadService.WebFallbackSuppressedChanged -= GamepadService_WebFallbackSuppressedChanged;
@@ -121,7 +198,9 @@ namespace Youtube_TV.Desktop
                 webView.CoreWebView2.Settings.IsWebMessageEnabled = true;
                 webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
                 webView.CoreWebView2.WebMessageReceived += CoreWebView2_WebMessageReceived;
+                webView.CoreWebView2.DOMContentLoaded += CoreWebView2_DOMContentLoaded;
                 webView.CoreWebView2.NavigationCompleted += CoreWebView2_NavigationCompleted;
+                webView.CoreWebView2.HistoryChanged += CoreWebView2_HistoryChanged;
                 webView.CoreWebView2.WindowCloseRequested += (s, e) => Close();
 
                 await webView.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(DesktopGamepadService.DesktopWebBridgeScript);
@@ -163,11 +242,25 @@ namespace Youtube_TV.Desktop
             }
         }
 
+        private void CoreWebView2_DOMContentLoaded(object sender, CoreWebView2DOMContentLoadedEventArgs e)
+        {
+            if (_gamepadService.IsForeground)
+            {
+                ForceFocusWebView();
+            }
+        }
+
         private void CoreWebView2_NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
             webView.Visibility = Visibility.Visible;
             LoadingText.Visibility = Visibility.Collapsed;
-            FocusWebView();
+            _gamepadService.NotifyPageNavigated();
+
+            if (_gamepadService.IsForeground)
+            {
+                ForceFocusWebView();
+                ScheduleDeferredFocusRestore(300, true);
+            }
 
             SyncForegroundToWeb(_gamepadService.IsForeground);
             SyncWebFallbackSuppressedToWeb(_gamepadService.IsWebFallbackSuppressed);
@@ -175,6 +268,20 @@ namespace Youtube_TV.Desktop
             {
                 _hasShownInitialControllerToast = true;
                 ShowToast("Controller ready  •  Press L3 for controls", null, 3500);
+            }
+        }
+
+        private void CoreWebView2_HistoryChanged(object sender, object e)
+        {
+            SyncForegroundToWeb(_gamepadService.IsForeground);
+            SyncWebFallbackSuppressedToWeb(_gamepadService.IsWebFallbackSuppressed);
+            if (_gamepadService.IsForeground)
+            {
+                if (!IsWin32FocusInsideWindow())
+                {
+                    ForceFocusWebView();
+                }
+                ScheduleDeferredFocusRestore(250, false);
             }
         }
 
@@ -196,7 +303,7 @@ namespace Youtube_TV.Desktop
             SyncForegroundToWeb(isForeground);
             if (isForeground)
             {
-                FocusWebView();
+                ForceFocusWebView();
             }
         }
 
@@ -308,11 +415,6 @@ namespace Youtube_TV.Desktop
             {
                 if (isPressed)
                 {
-                    if (!webView.IsKeyboardFocusWithin)
-                    {
-                        FocusWebView();
-                    }
-
                     if (!isRepeat)
                     {
                         int count;
@@ -404,7 +506,7 @@ namespace Youtube_TV.Desktop
                 ShowToast(_isFullscreen ? "Fullscreen Mode" : "Windowed Mode", null, 1800);
             }
 
-            FocusWebView();
+            ForceFocusWebView();
         }
 
         private void ToggleMute()
@@ -461,8 +563,9 @@ namespace Youtube_TV.Desktop
 
             try
             {
+                string statusJson = JsonSerializer.Serialize(_gamepadService.DiagnosticStatus ?? string.Empty);
                 await core.ExecuteScriptAsync(
-                    "window.__ytTvSetHelpVisible && window.__ytTvSetHelpVisible(" + (visible ? "true" : "false") + ");");
+                    "window.__ytTvSetHelpVisible && window.__ytTvSetHelpVisible(" + (visible ? "true" : "false") + "," + statusJson + ");");
             }
             catch (Exception)
             {
@@ -470,7 +573,7 @@ namespace Youtube_TV.Desktop
 
             if (!visible)
             {
-                FocusWebView();
+                ForceFocusWebView();
             }
         }
 
@@ -535,11 +638,165 @@ namespace Youtube_TV.Desktop
 
         private void FocusWebView()
         {
-            if (webView.Visibility == Visibility.Visible)
+            ForceFocusWebView();
+        }
+
+        private async void ScheduleDeferredFocusRestore(int delayMs, bool alwaysForce)
+        {
+            try
             {
-                webView.Focus();
-                Keyboard.Focus(webView);
+                await Task.Delay(delayMs);
             }
+            catch (Exception)
+            {
+                return;
+            }
+
+            if (_isClosed || !_gamepadService.IsForeground)
+            {
+                return;
+            }
+
+            if (alwaysForce || !IsWin32FocusInsideWindow())
+            {
+                ForceFocusWebView();
+            }
+        }
+
+        private void ForceFocusWebView()
+        {
+            if (_isClosed || webView.Visibility != Visibility.Visible)
+            {
+                return;
+            }
+
+            if (_windowHandle != IntPtr.Zero && IsWindowVisible(_windowHandle) && !IsIconic(_windowHandle))
+            {
+                IntPtr fg = GetForegroundWindow();
+                if (fg == IntPtr.Zero || !IsWindowVisible(fg) || IsEmptyWindowRect(fg))
+                {
+                    Activate();
+                    SetForegroundWindow(_windowHandle);
+                }
+            }
+
+            // Clearing WPF's cached logical focus guarantees WebView2.OnGotKeyboardFocus runs
+            // CoreWebView2Controller.MoveFocus(Programmatic) even after cross-document reloads.
+            Keyboard.ClearFocus();
+            webView.Focus();
+            Keyboard.Focus(webView);
+
+            FocusWebViewChildHwnd();
+            EnsureWebDocumentFocusAsync();
+            _gamepadService.NotifyWindowFocusHint();
+        }
+
+        private bool IsWin32FocusInsideWindow()
+        {
+            if (_windowHandle == IntPtr.Zero)
+            {
+                return true;
+            }
+
+            GuiThreadInfo info = new GuiThreadInfo();
+            info.cbSize = Marshal.SizeOf(typeof(GuiThreadInfo));
+            if (!GetGUIThreadInfo(0, ref info))
+            {
+                return false;
+            }
+
+            return info.hwndFocus == _windowHandle ||
+                (info.hwndFocus != IntPtr.Zero && IsChild(_windowHandle, info.hwndFocus));
+        }
+
+        private void FocusWebViewChildHwnd()
+        {
+            if (_windowHandle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            IntPtr renderHostHwnd = IntPtr.Zero;
+            IntPtr chromeWidgetHwnd = IntPtr.Zero;
+            StringBuilder className = new StringBuilder(64);
+
+            EnumChildWindows(_windowHandle, delegate(IntPtr child, IntPtr lParam)
+            {
+                className.Clear();
+                if (GetClassName(child, className, className.Capacity) > 0)
+                {
+                    string name = className.ToString();
+                    if (name == "Chrome_RenderWidgetHostHWND")
+                    {
+                        renderHostHwnd = child;
+                        return false;
+                    }
+                    if (chromeWidgetHwnd == IntPtr.Zero && name.StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal))
+                    {
+                        chromeWidgetHwnd = child;
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            IntPtr targetHwnd = renderHostHwnd != IntPtr.Zero ? renderHostHwnd : chromeWidgetHwnd;
+            if (targetHwnd == IntPtr.Zero)
+            {
+                return;
+            }
+
+            uint dummyPid;
+            uint targetThreadId = GetWindowThreadProcessId(targetHwnd, out dummyPid);
+            uint currentThreadId = GetCurrentThreadId();
+            bool attached = false;
+
+            try
+            {
+                if (targetThreadId != 0 && targetThreadId != currentThreadId)
+                {
+                    attached = AttachThreadInput(currentThreadId, targetThreadId, true);
+                }
+
+                SetFocus(targetHwnd);
+            }
+            catch (Exception)
+            {
+            }
+            finally
+            {
+                if (attached)
+                {
+                    AttachThreadInput(currentThreadId, targetThreadId, false);
+                }
+            }
+        }
+
+        private async void EnsureWebDocumentFocusAsync()
+        {
+            CoreWebView2 core = webView.CoreWebView2;
+            if (core == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await core.ExecuteScriptAsync("window.__ytTvEnsureFocus && window.__ytTvEnsureFocus();");
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private static bool IsEmptyWindowRect(IntPtr hWnd)
+        {
+            NativeRect rect;
+            if (!GetWindowRect(hWnd, out rect))
+            {
+                return false;
+            }
+
+            return (rect.Right - rect.Left) <= 0 || (rect.Bottom - rect.Top) <= 0;
         }
     }
 }
