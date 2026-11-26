@@ -2,7 +2,8 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AssemblyName>TubeTV</AssemblyName>
@@ -10,7 +11,7 @@
     <ApplicationIcon>..\Assets\TubeTV.ico</ApplicationIcon>
     <Product>TubeTV - Client for YouTube TV</Product>
     <Description>Unofficial YouTube TV desktop client for Windows PCs, couch PCs, and handheld gaming devices</Description>
-    <Version>2.0.0</Version>
+    <Version>2.0.1</Version>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
   </PropertyGroup>

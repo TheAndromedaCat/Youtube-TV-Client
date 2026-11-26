@@ -38,7 +38,7 @@ jobs:
             $ver = "${{ github.ref_name }}".TrimStart('v')
           }
           if ([string]::IsNullOrWhiteSpace($ver)) {
-            $ver = "2.0.0"
+            $ver = "2.0.1"
           }
           echo "app_version=$ver" >> $env:GITHUB_OUTPUT
           echo "Resolved version: $ver"
