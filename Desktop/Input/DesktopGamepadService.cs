@@ -3,19 +3,27 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
+using Windows.Gaming.Input;
 using Youtube_TV.Input;
 
 namespace Youtube_TV.Desktop.Input
 {
     /// <summary>
-    /// Coordinates native XInput controller polling (Xbox controllers, ASUS ROG Ally,
-    /// Lenovo Legion Go, Steam Deck on Windows, XInput gamepads) alongside an automatic
-    /// W3C Web Gamepad API fallback for direct USB/Bluetooth PlayStation and Switch controllers.
+    /// Coordinates multi-backend controller input for Windows Desktop and Windows 11 Xbox Mode
+    /// (Full Screen Experience) on handhelds like the ASUS ROG Xbox Ally X:
+    /// 1. Native XInput (xinput1_4 / xinput9_1_0)
+    /// 2. Native Windows.Gaming.Input.Gamepad (GameInput-backed API used in Xbox Mode)
+    /// 3. W3C Web Gamepad API fallback (PlayStation DualSense / DualShock 4 / Switch Pro,
+    ///    and automatic fallback if native APIs report zeroed readings)
+    ///
+    /// Uses live Win32 foreground HWND checks instead of sticky WPF Deactivated events so
+    /// Xbox Mode Task Switcher, Game Bar, and WebView2 child HWND focus changes never stall polling.
     /// </summary>
     public sealed class DesktopGamepadService : IDisposable
     {
         private const int MaxXInputControllers = 4;
         private const uint ErrorSuccess = 0;
+        private const uint GaRoot = 2;
 
         private const ushort XInputDPadUp = 0x0001;
         private const ushort XInputDPadDown = 0x0002;
@@ -33,7 +41,8 @@ namespace Youtube_TV.Desktop.Input
         private const ushort XInputY = 0x8000;
 
         private static readonly TimeSpan ActivePollInterval = TimeSpan.FromMilliseconds(16);
-        private static readonly TimeSpan IdleScanInterval = TimeSpan.FromMilliseconds(1000);
+        private static readonly TimeSpan BackgroundCheckInterval = TimeSpan.FromMilliseconds(150);
+        private static readonly TimeSpan IdleScanInterval = TimeSpan.FromMilliseconds(500);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct XInputGamepad
@@ -60,21 +69,48 @@ namespace Youtube_TV.Desktop.Input
         [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetState")]
         private static extern uint XInputGetState910(uint dwUserIndex, out XInputState pState);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsChild(IntPtr hWndParent, IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsIconic(IntPtr hWnd);
+
         private readonly ControllerInputProcessor _processor = new ControllerInputProcessor();
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly DispatcherTimer _pollTimer;
-        private readonly List<ControllerReading> _readingScratch = new List<ControllerReading>(MaxXInputControllers);
+        private readonly List<ControllerReading> _readingScratch = new List<ControllerReading>(8);
+        private readonly uint _currentProcessId;
 
+        private IntPtr _windowHandle = IntPtr.Zero;
+        private uint _webViewBrowserProcessId;
         private bool _useXInput910Fallback;
         private bool _xInputUnavailable;
-        private bool _isWindowActive = true;
+        private bool _wgiAvailable;
+        private bool _isForeground = true;
         private bool _isDisposed;
         private int _nativeGamepadCount;
+        private bool _nativeInputVerifiedInSession;
         private ControllerReading _webReading;
         private bool _hasActiveWebInput;
 
         public event EventHandler<ControllerActionEvent> ActionTriggered;
-        public event EventHandler<int> NativeGamepadCountChanged;
+        public event EventHandler<bool> ForegroundChanged;
+        public event EventHandler<bool> WebFallbackSuppressedChanged;
         public event EventHandler<bool> ControllerConnectionToastRequested;
         public event EventHandler FullscreenToggleRequested;
         public event EventHandler HelpOverlayDismissedFromWeb;
@@ -86,12 +122,15 @@ namespace Youtube_TV.Desktop.Input
                 throw new ArgumentNullException(nameof(dispatcher));
             }
 
+            _currentProcessId = (uint)Process.GetCurrentProcess().Id;
+
+            InitializeWindowsGamingInput();
+
             _pollTimer = new DispatcherTimer(DispatcherPriority.Input, dispatcher);
             _pollTimer.Tick += PollTimer_Tick;
 
-            // Detect already-connected controllers on startup without firing a redundant toast.
             ControllerReading initialReading;
-            _nativeGamepadCount = ReadXInputControllers(out initialReading);
+            _nativeGamepadCount = ReadNativeControllers(out initialReading);
             UpdatePollingTimer();
         }
 
@@ -100,9 +139,37 @@ namespace Youtube_TV.Desktop.Input
             get { return _nativeGamepadCount; }
         }
 
+        public bool IsWebFallbackSuppressed
+        {
+            get { return _nativeInputVerifiedInSession; }
+        }
+
+        public bool IsForeground
+        {
+            get { return _isForeground; }
+        }
+
+        public void AttachWindow(IntPtr windowHandle)
+        {
+            _windowHandle = windowHandle;
+            EvaluateForegroundState();
+        }
+
+        public void SetWebViewBrowserProcessId(uint browserProcessId)
+        {
+            _webViewBrowserProcessId = browserProcessId;
+            EvaluateForegroundState();
+        }
+
+        public void NotifyWindowFocusHint()
+        {
+            EvaluateForegroundState();
+        }
+
         /// <summary>
         /// Script injected into WebView2 on document creation to provide:
-        /// 1. W3C Web Gamepad API fallback (DualSense / DualShock 4 / Switch Pro) when no XInput controller is connected.
+        /// 1. W3C Web Gamepad API fallback (PlayStation / Switch Pro, and automatic backup if native APIs
+        ///    do not deliver input in Xbox Mode).
         /// 2. Persistent HTML5 video volume control across autoplay transitions.
         /// 3. F11 / Alt+Enter fullscreen toggle forwarding.
         /// 4. Shadow DOM toast and controller controls overlay rendered cleanly above WebView2 video.
@@ -116,7 +183,8 @@ namespace Youtube_TV.Desktop.Input
     if (window.__ytTvControllerBridgeInstalled) { return; }
     window.__ytTvControllerBridgeInstalled = true;
 
-    var nativeCount = 0;
+    var suppressWebGamepad = false;
+    var appForeground = true;
     var rafId = 0;
     var lastPayload = '';
     var desiredVolume = null;
@@ -243,9 +311,17 @@ namespace Youtube_TV.Desktop.Input
         }
     };
 
-    window.__ytTvSetNativeGamepadCount = function(count) {
-        nativeCount = count || 0;
-        if (nativeCount > 0 && lastPayload !== '') {
+    window.__ytTvSetWebFallbackSuppressed = function(suppressed) {
+        suppressWebGamepad = !!suppressed;
+        if (suppressWebGamepad && lastPayload !== '') {
+            lastPayload = '';
+        }
+        updateLoop();
+    };
+
+    window.__ytTvSetForeground = function(isForeground) {
+        appForeground = !!isForeground;
+        if (!appForeground) {
             lastPayload = '';
         }
         updateLoop();
@@ -301,68 +377,66 @@ namespace Youtube_TV.Desktop.Input
 
     function pollWebGamepads() {
         rafId = 0;
-        if (nativeCount > 0 || !hasWebGamepads()) {
+        if (suppressWebGamepad || !appForeground || !hasWebGamepads()) {
             return;
         }
 
-        if (document.hasFocus()) {
-            var pads = navigator.getGamepads();
-            var mask = 0;
-            var lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
-            var bestLMag = 0, bestRMag = 0;
+        var pads = navigator.getGamepads();
+        var mask = 0;
+        var lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0;
+        var bestLMag = 0, bestRMag = 0;
 
-            for (var i = 0; i < pads.length; i++) {
-                var p = pads[i];
-                if (!p || !p.connected || p.mapping !== 'standard') { continue; }
-                var b = p.buttons;
-                if (btnPressed(b, 9))  mask |= 1;
-                if (btnPressed(b, 8))  mask |= 2;
-                if (btnPressed(b, 0))  mask |= 4;
-                if (btnPressed(b, 1))  mask |= 8;
-                if (btnPressed(b, 2))  mask |= 16;
-                if (btnPressed(b, 3))  mask |= 32;
-                if (btnPressed(b, 12)) mask |= 64;
-                if (btnPressed(b, 13)) mask |= 128;
-                if (btnPressed(b, 14)) mask |= 256;
-                if (btnPressed(b, 15)) mask |= 512;
-                if (btnPressed(b, 4))  mask |= 1024;
-                if (btnPressed(b, 5))  mask |= 2048;
-                if (btnPressed(b, 10)) mask |= 4096;
-                if (btnPressed(b, 11)) mask |= 8192;
+        for (var i = 0; i < pads.length; i++) {
+            var p = pads[i];
+            if (!p || !p.connected || p.mapping !== 'standard') { continue; }
+            var b = p.buttons;
+            if (btnPressed(b, 9))  mask |= 1;
+            if (btnPressed(b, 8))  mask |= 2;
+            if (btnPressed(b, 0))  mask |= 4;
+            if (btnPressed(b, 1))  mask |= 8;
+            if (btnPressed(b, 2))  mask |= 16;
+            if (btnPressed(b, 3))  mask |= 32;
+            if (btnPressed(b, 12)) mask |= 64;
+            if (btnPressed(b, 13)) mask |= 128;
+            if (btnPressed(b, 14)) mask |= 256;
+            if (btnPressed(b, 15)) mask |= 512;
+            if (btnPressed(b, 4))  mask |= 1024;
+            if (btnPressed(b, 5))  mask |= 2048;
+            if (btnPressed(b, 10)) mask |= 4096;
+            if (btnPressed(b, 11)) mask |= 8192;
 
-                var tL = btnValue(b, 6);
-                var tR = btnValue(b, 7);
-                if (tL > lt) lt = tL;
-                if (tR > rt) rt = tR;
+            var tL = btnValue(b, 6);
+            var tR = btnValue(b, 7);
+            if (tL > lt) lt = tL;
+            if (tR > rt) rt = tR;
 
-                var a = p.axes || [];
-                var clx = a.length > 0 ? a[0] : 0;
-                var cly = a.length > 1 ? -a[1] : 0;
-                var crx = a.length > 2 ? a[2] : 0;
-                var cry = a.length > 3 ? -a[3] : 0;
+            var a = p.axes || [];
+            var clx = a.length > 0 ? a[0] : 0;
+            var cly = a.length > 1 ? -a[1] : 0;
+            var crx = a.length > 2 ? a[2] : 0;
+            var cry = a.length > 3 ? -a[3] : 0;
 
-                var lMag = clx * clx + cly * cly;
-                if (lMag > bestLMag) { bestLMag = lMag; lx = clx; ly = cly; }
-                var rMag = crx * crx + cry * cry;
-                if (rMag > bestRMag) { bestRMag = rMag; rx = crx; ry = cry; }
-            }
+            var lMag = clx * clx + cly * cly;
+            if (lMag > bestLMag) { bestLMag = lMag; lx = clx; ly = cly; }
+            var rMag = crx * crx + cry * cry;
+            if (rMag > bestRMag) { bestRMag = rMag; rx = crx; ry = cry; }
+        }
 
-            var payload = 'gp:' + mask + '|' +
-                lx.toFixed(3) + '|' + ly.toFixed(3) + '|' +
-                rx.toFixed(3) + '|' + ry.toFixed(3) + '|' +
-                lt.toFixed(3) + '|' + rt.toFixed(3);
+        var payload = 'gp:' + mask + '|' +
+            lx.toFixed(3) + '|' + ly.toFixed(3) + '|' +
+            rx.toFixed(3) + '|' + ry.toFixed(3) + '|' +
+            lt.toFixed(3) + '|' + rt.toFixed(3);
 
-            if (payload !== lastPayload) {
-                lastPayload = payload;
-                post(payload);
-            }
+        if (payload !== lastPayload) {
+            lastPayload = payload;
+            post(payload);
         }
 
         rafId = window.requestAnimationFrame(pollWebGamepads);
     }
 
     function updateLoop() {
-        if (nativeCount === 0 && hasWebGamepads()) {
+        if (!suppressWebGamepad && appForeground && hasWebGamepads()) {
             if (!rafId) {
                 rafId = window.requestAnimationFrame(pollWebGamepads);
             }
@@ -373,14 +447,14 @@ namespace Youtube_TV.Desktop.Input
     }
 
     window.addEventListener('gamepadconnected', function() {
-        if (nativeCount === 0) {
+        if (!suppressWebGamepad) {
             post('gp_connected');
         }
         updateLoop();
     });
 
     window.addEventListener('gamepaddisconnected', function() {
-        if (nativeCount === 0 && !hasWebGamepads()) {
+        if (!suppressWebGamepad && !hasWebGamepads()) {
             lastPayload = '';
             post('gp:0|0|0|0|0|0|0');
             post('gp_disconnected');
@@ -391,24 +465,6 @@ namespace Youtube_TV.Desktop.Input
     updateLoop();
 })();";
             }
-        }
-
-        public void SetWindowActive(bool isActive)
-        {
-            if (_isDisposed || _isWindowActive == isActive)
-            {
-                return;
-            }
-
-            _isWindowActive = isActive;
-            if (!_isWindowActive)
-            {
-                _webReading = new ControllerReading();
-                _hasActiveWebInput = false;
-                EmitEvents(_processor.Reset());
-            }
-
-            UpdatePollingTimer();
         }
 
         public void HandleWebMessage(string message)
@@ -445,7 +501,7 @@ namespace Youtube_TV.Desktop.Input
             {
                 _webReading = new ControllerReading();
                 _hasActiveWebInput = false;
-                if (_nativeGamepadCount == 0)
+                if (!_nativeInputVerifiedInSession && _nativeGamepadCount == 0)
                 {
                     EmitEvents(_processor.Reset());
                     RaiseConnectionToast(false);
@@ -454,7 +510,7 @@ namespace Youtube_TV.Desktop.Input
                 return;
             }
 
-            if (!_isWindowActive || _nativeGamepadCount > 0)
+            if (!_isForeground || _nativeInputVerifiedInSession)
             {
                 return;
             }
@@ -472,76 +528,217 @@ namespace Youtube_TV.Desktop.Input
             UpdatePollingTimer();
         }
 
+        private void InitializeWindowsGamingInput()
+        {
+            try
+            {
+                // Accessing Gamepad.Gamepads and subscribing to Added/Removed ensures
+                // WinRT initializes its GameInput-backed gamepad manager on desktop apps.
+                var unused = Gamepad.Gamepads.Count;
+                Gamepad.GamepadAdded += WgiGamepad_GamepadAdded;
+                Gamepad.GamepadRemoved += WgiGamepad_GamepadRemoved;
+                _wgiAvailable = true;
+            }
+            catch (Exception)
+            {
+                _wgiAvailable = false;
+            }
+        }
+
+        private void WgiGamepad_GamepadAdded(object sender, Gamepad gamepad)
+        {
+        }
+
+        private void WgiGamepad_GamepadRemoved(object sender, Gamepad gamepad)
+        {
+        }
+
         private void PollTimer_Tick(object sender, EventArgs e)
         {
-            if (_isDisposed || !_isWindowActive)
+            if (_isDisposed)
             {
                 return;
             }
 
-            ControllerReading combined;
-            int count = ReadXInputControllers(out combined);
+            EvaluateForegroundState();
+            if (!_isForeground)
+            {
+                return;
+            }
 
-            if (count != _nativeGamepadCount)
+            ControllerReading nativeCombined;
+            int nativeCount = ReadNativeControllers(out nativeCombined);
+
+            if (nativeCount != _nativeGamepadCount)
             {
                 int previous = _nativeGamepadCount;
-                _nativeGamepadCount = count;
+                _nativeGamepadCount = nativeCount;
 
-                if (count > 0 && previous == 0)
+                if (nativeCount > 0 && previous == 0)
                 {
-                    _webReading = new ControllerReading();
-                    _hasActiveWebInput = false;
-                    RaiseNativeCountChanged(count);
                     RaiseConnectionToast(true);
                 }
-                else if (count == 0 && previous > 0)
+                else if (nativeCount == 0 && previous > 0)
                 {
+                    if (_nativeInputVerifiedInSession)
+                    {
+                        SetWebFallbackSuppressed(false);
+                    }
                     EmitEvents(_processor.Reset());
-                    RaiseNativeCountChanged(0);
                     RaiseConnectionToast(false);
-                }
-                else
-                {
-                    RaiseNativeCountChanged(count);
                 }
 
                 UpdatePollingTimer();
             }
 
-            if (count > 0)
+            bool nativeHasSignal = nativeCount > 0 && !ControllerInputProcessor.IsNeutral(nativeCombined);
+            if (nativeHasSignal && !_nativeInputVerifiedInSession)
             {
-                EmitEvents(_processor.Update(combined, _clock.ElapsedMilliseconds));
+                _webReading = new ControllerReading();
+                _hasActiveWebInput = false;
+                SetWebFallbackSuppressed(true);
+            }
+
+            if (_nativeInputVerifiedInSession && nativeCount > 0)
+            {
+                EmitEvents(_processor.Update(nativeCombined, _clock.ElapsedMilliseconds));
             }
             else if (_hasActiveWebInput || _processor.HasHeldActions)
             {
-                EmitEvents(_processor.Update(_webReading, _clock.ElapsedMilliseconds));
-                if (!_hasActiveWebInput && !_processor.HasHeldActions)
+                // Before native input is verified in this session, combine native + web readings
+                // idempotently so either backend works seamlessly (including Xbox Mode / GameInput).
+                ControllerReading merged = _hasActiveWebInput
+                    ? ControllerInputProcessor.CombineReadings(new ControllerReading[] { nativeCombined, _webReading })
+                    : nativeCombined;
+
+                EmitEvents(_processor.Update(merged, _clock.ElapsedMilliseconds));
+                if (nativeCount == 0 && !_hasActiveWebInput && !_processor.HasHeldActions)
                 {
                     UpdatePollingTimer();
                 }
             }
         }
 
-        private int ReadXInputControllers(out ControllerReading combined)
+        private void EvaluateForegroundState()
         {
-            _readingScratch.Clear();
-            if (_xInputUnavailable)
+            bool nowForeground = CheckIsAppForeground();
+            if (nowForeground == _isForeground)
             {
-                combined = new ControllerReading();
-                return 0;
+                return;
             }
 
-            for (uint i = 0; i < MaxXInputControllers; i++)
+            _isForeground = nowForeground;
+
+            if (!_isForeground)
             {
-                XInputState state;
-                if (TryGetXInputState(i, out state))
+                _webReading = new ControllerReading();
+                _hasActiveWebInput = false;
+                EmitEvents(_processor.Reset());
+            }
+            else
+            {
+                // Re-allow web fallback until native confirms active input in the resumed foreground session.
+                if (_nativeInputVerifiedInSession)
                 {
-                    _readingScratch.Add(ConvertXInputReading(state.Gamepad));
+                    SetWebFallbackSuppressed(false);
+                }
+            }
+
+            EventHandler<bool> fgHandler = ForegroundChanged;
+            if (fgHandler != null)
+            {
+                fgHandler(this, _isForeground);
+            }
+
+            UpdatePollingTimer();
+        }
+
+        private bool CheckIsAppForeground()
+        {
+            if (_windowHandle == IntPtr.Zero)
+            {
+                return true;
+            }
+
+            if (!IsWindowVisible(_windowHandle) || IsIconic(_windowHandle))
+            {
+                return false;
+            }
+
+            IntPtr fg = GetForegroundWindow();
+            if (fg == IntPtr.Zero)
+            {
+                // During Xbox Mode shell transitions GetForegroundWindow can briefly be null.
+                return true;
+            }
+
+            if (fg == _windowHandle || IsChild(_windowHandle, fg))
+            {
+                return true;
+            }
+
+            IntPtr root = GetAncestor(fg, GaRoot);
+            if (root == _windowHandle)
+            {
+                return true;
+            }
+
+            uint fgPid;
+            GetWindowThreadProcessId(fg, out fgPid);
+            if (fgPid == _currentProcessId)
+            {
+                return true;
+            }
+
+            if (_webViewBrowserProcessId != 0 && fgPid == _webViewBrowserProcessId)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private int ReadNativeControllers(out ControllerReading combined)
+        {
+            _readingScratch.Clear();
+
+            // 1. XInput (slots 0..3)
+            int xInputCount = 0;
+            if (!_xInputUnavailable)
+            {
+                for (uint i = 0; i < MaxXInputControllers; i++)
+                {
+                    XInputState state;
+                    if (TryGetXInputState(i, out state))
+                    {
+                        xInputCount++;
+                        _readingScratch.Add(ConvertXInputReading(state.Gamepad));
+                    }
+                }
+            }
+
+            // 2. Windows.Gaming.Input.Gamepad (GameInput-backed — native in Windows 11 Xbox Mode)
+            int wgiCount = 0;
+            if (_wgiAvailable)
+            {
+                try
+                {
+                    IReadOnlyList<Gamepad> currentPads = Gamepad.Gamepads;
+                    for (int i = 0; i < currentPads.Count; i++)
+                    {
+                        GamepadReading raw = currentPads[i].GetCurrentReading();
+                        wgiCount++;
+                        _readingScratch.Add(ConvertWgiReading(raw));
+                    }
+                }
+                catch (Exception)
+                {
+                    // Ignore transient WinRT read exceptions if a controller disconnects mid-frame.
                 }
             }
 
             combined = ControllerInputProcessor.CombineReadings(_readingScratch);
-            return _readingScratch.Count;
+            return xInputCount > wgiCount ? xInputCount : wgiCount;
         }
 
         private bool TryGetXInputState(uint userIndex, out XInputState state)
@@ -608,6 +805,38 @@ namespace Youtube_TV.Desktop.Input
             };
         }
 
+        private static ControllerReading ConvertWgiReading(GamepadReading raw)
+        {
+            ControllerButton buttons = ControllerButton.None;
+            GamepadButtons b = raw.Buttons;
+
+            if ((b & GamepadButtons.Menu) != 0) buttons |= ControllerButton.Menu;
+            if ((b & GamepadButtons.View) != 0) buttons |= ControllerButton.View;
+            if ((b & GamepadButtons.A) != 0) buttons |= ControllerButton.A;
+            if ((b & GamepadButtons.B) != 0) buttons |= ControllerButton.B;
+            if ((b & GamepadButtons.X) != 0) buttons |= ControllerButton.X;
+            if ((b & GamepadButtons.Y) != 0) buttons |= ControllerButton.Y;
+            if ((b & GamepadButtons.DPadUp) != 0) buttons |= ControllerButton.DPadUp;
+            if ((b & GamepadButtons.DPadDown) != 0) buttons |= ControllerButton.DPadDown;
+            if ((b & GamepadButtons.DPadLeft) != 0) buttons |= ControllerButton.DPadLeft;
+            if ((b & GamepadButtons.DPadRight) != 0) buttons |= ControllerButton.DPadRight;
+            if ((b & GamepadButtons.LeftShoulder) != 0) buttons |= ControllerButton.LeftShoulder;
+            if ((b & GamepadButtons.RightShoulder) != 0) buttons |= ControllerButton.RightShoulder;
+            if ((b & GamepadButtons.LeftThumbstick) != 0) buttons |= ControllerButton.LeftThumbstick;
+            if ((b & GamepadButtons.RightThumbstick) != 0) buttons |= ControllerButton.RightThumbstick;
+
+            return new ControllerReading
+            {
+                Buttons = buttons,
+                LeftThumbstickX = raw.LeftThumbstickX,
+                LeftThumbstickY = raw.LeftThumbstickY,
+                RightThumbstickX = raw.RightThumbstickX,
+                RightThumbstickY = raw.RightThumbstickY,
+                LeftTrigger = raw.LeftTrigger,
+                RightTrigger = raw.RightTrigger
+            };
+        }
+
         private static double NormalizeThumbstick(short value)
         {
             double normalized = value / 32767.0;
@@ -616,9 +845,24 @@ namespace Youtube_TV.Desktop.Input
             return normalized;
         }
 
+        private void SetWebFallbackSuppressed(bool suppressed)
+        {
+            if (_nativeInputVerifiedInSession == suppressed)
+            {
+                return;
+            }
+
+            _nativeInputVerifiedInSession = suppressed;
+            EventHandler<bool> handler = WebFallbackSuppressedChanged;
+            if (handler != null)
+            {
+                handler(this, suppressed);
+            }
+        }
+
         private void UpdatePollingTimer()
         {
-            if (_isDisposed || !_isWindowActive)
+            if (_isDisposed)
             {
                 if (_pollTimer.IsEnabled)
                 {
@@ -627,8 +871,20 @@ namespace Youtube_TV.Desktop.Input
                 return;
             }
 
-            bool fastPoll = _nativeGamepadCount > 0 || _hasActiveWebInput || _processor.HasHeldActions;
-            TimeSpan desiredInterval = fastPoll ? ActivePollInterval : IdleScanInterval;
+            TimeSpan desiredInterval;
+            if (!_isForeground)
+            {
+                desiredInterval = BackgroundCheckInterval;
+            }
+            else if (_nativeGamepadCount > 0 || _hasActiveWebInput || _processor.HasHeldActions)
+            {
+                desiredInterval = ActivePollInterval;
+            }
+            else
+            {
+                desiredInterval = IdleScanInterval;
+            }
+
             if (_pollTimer.Interval != desiredInterval)
             {
                 _pollTimer.Interval = desiredInterval;
@@ -654,15 +910,6 @@ namespace Youtube_TV.Desktop.Input
             }
         }
 
-        private void RaiseNativeCountChanged(int count)
-        {
-            EventHandler<int> handler = NativeGamepadCountChanged;
-            if (handler != null)
-            {
-                handler(this, count);
-            }
-        }
-
         private void RaiseConnectionToast(bool connected)
         {
             EventHandler<bool> handler = ControllerConnectionToastRequested;
@@ -680,6 +927,17 @@ namespace Youtube_TV.Desktop.Input
             }
 
             _isDisposed = true;
+            if (_wgiAvailable)
+            {
+                try
+                {
+                    Gamepad.GamepadAdded -= WgiGamepad_GamepadAdded;
+                    Gamepad.GamepadRemoved -= WgiGamepad_GamepadRemoved;
+                }
+                catch (Exception)
+                {
+                }
+            }
             _pollTimer.Stop();
             _pollTimer.Tick -= PollTimer_Tick;
             _processor.Reset();

@@ -27,7 +27,7 @@ You can also link YouTube TV to your phone as if it was a regular TV app, and th
 When searching for videos, typing with your keyboard will work, but note that **pressing the enter key will type the selected character**. Results are loaded automatically, you just need to scroll down in order to see them.
 
 # Controller Support
-Built-in gamepad support works out of the box for couch PCs and Windows handhelds (such as **ASUS ROG Ally**, **Lenovo Legion Go**, and **Steam Deck on Windows**), supporting Xbox/XInput controllers natively (`XInput` on Desktop / `Windows.Gaming.Input` on UWP) as well as direct USB/Bluetooth PlayStation (DualSense / DualShock 4) and Nintendo Switch Pro controllers via the built-in Web Gamepad bridge. Multiple controllers can be used simultaneously (e.g., a docked handheld and a wireless couch controller), and controller input automatically pauses when the app is not in focus.
+Built-in gamepad support works out of the box for couch PCs and Windows handhelds (such as **ASUS ROG Ally / ROG Xbox Ally X**, **Lenovo Legion Go**, and **Steam Deck on Windows**), supporting Xbox/XInput controllers natively (`XInput` + `Windows.Gaming.Input` on Desktop, `Windows.Gaming.Input` on UWP) as well as direct USB/Bluetooth PlayStation (DualSense / DualShock 4) and Nintendo Switch Pro controllers via the built-in Web Gamepad bridge. Multiple controllers can be used simultaneously (e.g., a docked handheld and a wireless couch controller), and controller input automatically pauses when the app is not in focus.
 
 | Controller Input | Action |
 | --- | --- |
@@ -42,6 +42,8 @@ Built-in gamepad support works out of the box for couch PCs and Windows handheld
 | **R3 (Right Stick Click)** | Mute / Unmute |
 | **View / Select** | Toggle Fullscreen |
 | **L3 (Left Stick Click)** | Show / Hide Controller Controls Overlay |
+
+> **ROG Ally / ROG Xbox Ally X (Xbox Mode) tip:** In Armoury Crate Command Center, set **Control Mode** to **Gamepad** (Armoury Crate's `Auto` mode can sometimes leave non-Xbox desktop apps in mouse/Desktop controls while in Xbox Full Screen Experience). Also ensure **Xbox Game Bar → Settings → Gamepad Cursor** is disabled while using TubeTV.
 
 # FAQ
 **Q: Maximum resolution is limited to a lower resulution**<br>

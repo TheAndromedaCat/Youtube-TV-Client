@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
 using Youtube_TV.Desktop.Input;
 using Youtube_TV.Input;
 
@@ -21,7 +22,7 @@ namespace Youtube_TV.Desktop
         private readonly DesktopGamepadService _gamepadService;
         private readonly Dictionary<int, int> _heldVirtualKeyCounts = new Dictionary<int, int>();
 
-        private bool _isFullscreen;
+        private bool _isFullscreen = true;
         private WindowStyle _restoreStyle = WindowStyle.SingleBorderWindow;
         private WindowState _restoreState = WindowState.Normal;
         private ResizeMode _restoreResizeMode = ResizeMode.CanResize;
@@ -36,11 +37,13 @@ namespace Youtube_TV.Desktop
 
             _gamepadService = new DesktopGamepadService(Dispatcher);
             _gamepadService.ActionTriggered += GamepadService_ActionTriggered;
-            _gamepadService.NativeGamepadCountChanged += GamepadService_NativeGamepadCountChanged;
+            _gamepadService.ForegroundChanged += GamepadService_ForegroundChanged;
+            _gamepadService.WebFallbackSuppressedChanged += GamepadService_WebFallbackSuppressedChanged;
             _gamepadService.ControllerConnectionToastRequested += GamepadService_ControllerConnectionToastRequested;
             _gamepadService.FullscreenToggleRequested += GamepadService_FullscreenToggleRequested;
             _gamepadService.HelpOverlayDismissedFromWeb += GamepadService_HelpOverlayDismissedFromWeb;
 
+            SourceInitialized += MainWindow_SourceInitialized;
             Loaded += MainWindow_Loaded;
             Activated += MainWindow_Activated;
             Deactivated += MainWindow_Deactivated;
@@ -48,27 +51,35 @@ namespace Youtube_TV.Desktop
             Closed += MainWindow_Closed;
         }
 
+        private void MainWindow_SourceInitialized(object sender, EventArgs e)
+        {
+            IntPtr hwnd = new WindowInteropHelper(this).Handle;
+            _gamepadService.AttachWindow(hwnd);
+        }
+
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            SetFullscreen(true, false);
+            Activate();
+            _gamepadService.NotifyWindowFocusHint();
             await InitializeWebViewAsync();
         }
 
         private void MainWindow_Activated(object sender, EventArgs e)
         {
-            _gamepadService.SetWindowActive(true);
+            _gamepadService.NotifyWindowFocusHint();
             FocusWebView();
         }
 
         private void MainWindow_Deactivated(object sender, EventArgs e)
         {
-            _gamepadService.SetWindowActive(false);
+            _gamepadService.NotifyWindowFocusHint();
         }
 
         private void MainWindow_Closed(object sender, EventArgs e)
         {
             _gamepadService.ActionTriggered -= GamepadService_ActionTriggered;
-            _gamepadService.NativeGamepadCountChanged -= GamepadService_NativeGamepadCountChanged;
+            _gamepadService.ForegroundChanged -= GamepadService_ForegroundChanged;
+            _gamepadService.WebFallbackSuppressedChanged -= GamepadService_WebFallbackSuppressedChanged;
             _gamepadService.ControllerConnectionToastRequested -= GamepadService_ControllerConnectionToastRequested;
             _gamepadService.FullscreenToggleRequested -= GamepadService_FullscreenToggleRequested;
             _gamepadService.HelpOverlayDismissedFromWeb -= GamepadService_HelpOverlayDismissedFromWeb;
@@ -103,6 +114,7 @@ namespace Youtube_TV.Desktop
 
                 CoreWebView2Environment env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
                 await webView.EnsureCoreWebView2Async(env);
+                _gamepadService.SetWebViewBrowserProcessId(webView.CoreWebView2.BrowserProcessId);
 
                 webView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 15, 15, 15);
                 webView.CoreWebView2.Settings.UserAgent = SmartTvUserAgent;
@@ -157,7 +169,8 @@ namespace Youtube_TV.Desktop
             LoadingText.Visibility = Visibility.Collapsed;
             FocusWebView();
 
-            SyncNativeGamepadCountToWeb(_gamepadService.NativeGamepadCount);
+            SyncForegroundToWeb(_gamepadService.IsForeground);
+            SyncWebFallbackSuppressedToWeb(_gamepadService.IsWebFallbackSuppressed);
             if (!_hasShownInitialControllerToast && _gamepadService.NativeGamepadCount > 0)
             {
                 _hasShownInitialControllerToast = true;
@@ -178,9 +191,18 @@ namespace Youtube_TV.Desktop
             }
         }
 
-        private void GamepadService_NativeGamepadCountChanged(object sender, int count)
+        private void GamepadService_ForegroundChanged(object sender, bool isForeground)
         {
-            SyncNativeGamepadCountToWeb(count);
+            SyncForegroundToWeb(isForeground);
+            if (isForeground)
+            {
+                FocusWebView();
+            }
+        }
+
+        private void GamepadService_WebFallbackSuppressedChanged(object sender, bool suppressed)
+        {
+            SyncWebFallbackSuppressedToWeb(suppressed);
         }
 
         private void GamepadService_ControllerConnectionToastRequested(object sender, bool connected)
@@ -286,6 +308,11 @@ namespace Youtube_TV.Desktop
             {
                 if (isPressed)
                 {
+                    if (!webView.IsKeyboardFocusWithin)
+                    {
+                        FocusWebView();
+                    }
+
                     if (!isRepeat)
                     {
                         int count;
@@ -470,7 +497,7 @@ namespace Youtube_TV.Desktop
             }
         }
 
-        private async void SyncNativeGamepadCountToWeb(int count)
+        private async void SyncForegroundToWeb(bool isForeground)
         {
             CoreWebView2 core = webView.CoreWebView2;
             if (core == null)
@@ -481,7 +508,25 @@ namespace Youtube_TV.Desktop
             try
             {
                 await core.ExecuteScriptAsync(
-                    "window.__ytTvSetNativeGamepadCount && window.__ytTvSetNativeGamepadCount(" + count.ToString(CultureInfo.InvariantCulture) + ");");
+                    "window.__ytTvSetForeground && window.__ytTvSetForeground(" + (isForeground ? "true" : "false") + ");");
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private async void SyncWebFallbackSuppressedToWeb(bool suppressed)
+        {
+            CoreWebView2 core = webView.CoreWebView2;
+            if (core == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await core.ExecuteScriptAsync(
+                    "window.__ytTvSetWebFallbackSuppressed && window.__ytTvSetWebFallbackSuppressed(" + (suppressed ? "true" : "false") + ");");
             }
             catch (Exception)
             {
@@ -493,6 +538,7 @@ namespace Youtube_TV.Desktop
             if (webView.Visibility == Visibility.Visible)
             {
                 webView.Focus();
+                Keyboard.Focus(webView);
             }
         }
     }
