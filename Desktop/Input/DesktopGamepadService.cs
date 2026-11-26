@@ -24,6 +24,7 @@ namespace Youtube_TV.Desktop.Input
         private const int MaxXInputControllers = 4;
         private const uint ErrorSuccess = 0;
         private const uint GaRoot = 2;
+        private const uint GaRootOwner = 3;
 
         private const ushort XInputDPadUp = 0x0001;
         private const ushort XInputDPadDown = 0x0002;
@@ -63,6 +64,15 @@ namespace Youtube_TV.Desktop.Input
             public XInputGamepad Gamepad;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
         [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")]
         private static extern uint XInputGetState14(uint dwUserIndex, out XInputState pState);
 
@@ -90,6 +100,10 @@ namespace Youtube_TV.Desktop.Input
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool IsIconic(IntPtr hWnd);
 
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetWindowRect(IntPtr hWnd, out NativeRect lpRect);
+
         private readonly ControllerInputProcessor _processor = new ControllerInputProcessor();
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly DispatcherTimer _pollTimer;
@@ -104,6 +118,8 @@ namespace Youtube_TV.Desktop.Input
         private bool _isForeground = true;
         private bool _isDisposed;
         private int _nativeGamepadCount;
+        private int _lastXInputCount;
+        private int _lastWgiCount;
         private bool _nativeInputVerifiedInSession;
         private ControllerReading _webReading;
         private bool _hasActiveWebInput;
@@ -149,6 +165,17 @@ namespace Youtube_TV.Desktop.Input
             get { return _isForeground; }
         }
 
+        public string DiagnosticStatus
+        {
+            get
+            {
+                string mode = _nativeInputVerifiedInSession
+                    ? "Native"
+                    : (_hasActiveWebInput ? "Web Gamepad" : "Native + Web Auto");
+                return "Input: " + mode + "  •  XInput: " + _lastXInputCount + "  •  WGI: " + _lastWgiCount;
+            }
+        }
+
         public void AttachWindow(IntPtr windowHandle)
         {
             _windowHandle = windowHandle;
@@ -166,6 +193,24 @@ namespace Youtube_TV.Desktop.Input
             EvaluateForegroundState();
         }
 
+        public void NotifyPageNavigated()
+        {
+            if (_isDisposed)
+            {
+                return;
+            }
+
+            _webReading = new ControllerReading();
+            _hasActiveWebInput = false;
+            if (_nativeInputVerifiedInSession)
+            {
+                SetWebFallbackSuppressed(false);
+            }
+
+            EvaluateForegroundState();
+            UpdatePollingTimer();
+        }
+
         /// <summary>
         /// Script injected into WebView2 on document creation to provide:
         /// 1. W3C Web Gamepad API fallback (PlayStation / Switch Pro, and automatic backup if native APIs
@@ -180,6 +225,7 @@ namespace Youtube_TV.Desktop.Input
             {
                 return @"
 (function() {
+    if (window !== window.top) { return; }
     if (window.__ytTvControllerBridgeInstalled) { return; }
     window.__ytTvControllerBridgeInstalled = true;
 
@@ -189,12 +235,14 @@ namespace Youtube_TV.Desktop.Input
     var lastPayload = '';
     var desiredVolume = null;
     var toastTimer = 0;
+    var hostEl = null;
     var shadowRoot = null;
     var toastEl = null;
     var toastTextEl = null;
     var toastBarWrapEl = null;
     var toastBarFillEl = null;
     var helpEl = null;
+    var helpStatusEl = null;
 
     function post(msg) {
         try {
@@ -205,16 +253,21 @@ namespace Youtube_TV.Desktop.Input
     }
 
     function ensureOverlay() {
-        if (shadowRoot) { return true; }
+        if (shadowRoot && hostEl && hostEl.isConnected) { return true; }
         var container = document.documentElement || document.body;
         if (!container) { return false; }
 
-        var host = document.createElement('div');
-        host.id = '__yt-tv-desktop-overlay';
-        host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
-        container.appendChild(host);
+        if (hostEl && shadowRoot) {
+            container.appendChild(hostEl);
+            return true;
+        }
 
-        shadowRoot = host.attachShadow({ mode: 'open' });
+        hostEl = document.createElement('div');
+        hostEl.id = '__yt-tv-desktop-overlay';
+        hostEl.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;';
+        container.appendChild(hostEl);
+
+        shadowRoot = hostEl.attachShadow({ mode: 'open' });
         shadowRoot.innerHTML = [
             '<style>',
             '  .toast {',
@@ -246,6 +299,7 @@ namespace Youtube_TV.Desktop.Input
             '  .row { display: flex; justify-content: space-between; gap: 16px; font-size: 16px; }',
             '  .key { color: #ff4e45; font-weight: 600; white-space: nowrap; }',
             '  .act { color: #ffffff; text-align: right; }',
+            '  .help-status { margin-top: 18px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.12); font-size: 12px; color: rgba(255,255,255,0.5); text-align: right; }',
             '</style>',
             '<div class=""toast"" id=""toast"">',
             '  <div class=""toast-text"" id=""toastText""></div>',
@@ -269,6 +323,7 @@ namespace Youtube_TV.Desktop.Input
             '      <div class=""row""><span class=""key"">View / Select</span><span class=""act"">Toggle Fullscreen</span></div>',
             '      <div class=""row""><span class=""key"">F11 / Alt+Enter</span><span class=""act"">Toggle Fullscreen (Keyboard)</span></div>',
             '    </div>',
+            '    <div class=""help-status"" id=""helpStatus""></div>',
             '  </div>',
             '</div>'
         ].join('');
@@ -278,6 +333,7 @@ namespace Youtube_TV.Desktop.Input
         toastBarWrapEl = shadowRoot.getElementById('barWrap');
         toastBarFillEl = shadowRoot.getElementById('barFill');
         helpEl = shadowRoot.getElementById('help');
+        helpStatusEl = shadowRoot.getElementById('helpStatus');
         helpEl.addEventListener('click', function() {
             window.__ytTvSetHelpVisible(false);
             post('help_closed');
@@ -302,13 +358,28 @@ namespace Youtube_TV.Desktop.Input
         }, durationMs || 2000);
     };
 
-    window.__ytTvSetHelpVisible = function(visible) {
+    window.__ytTvSetHelpVisible = function(visible, statusText) {
         if (!ensureOverlay()) { return; }
+        if (typeof statusText === 'string' && helpStatusEl) {
+            helpStatusEl.textContent = statusText;
+        }
         if (visible) {
             helpEl.classList.add('visible');
         } else {
             helpEl.classList.remove('visible');
         }
+    };
+
+    window.__ytTvEnsureFocus = function() {
+        try {
+            window.focus();
+            if (document.body && (!document.activeElement || document.activeElement === document.documentElement)) {
+                if (typeof document.body.focus === 'function') {
+                    document.body.focus();
+                }
+            }
+        } catch (err) { }
+        updateLoop();
     };
 
     window.__ytTvSetWebFallbackSuppressed = function(suppressed) {
@@ -461,6 +532,17 @@ namespace Youtube_TV.Desktop.Input
         }
         updateLoop();
     });
+
+    window.addEventListener('focus', updateLoop);
+    document.addEventListener('visibilitychange', updateLoop);
+
+    // Lightweight recovery check in case Chromium exposes gamepads after a cross-origin
+    // navigation (e.g. YouTube TV account picker -> home) without re-firing gamepadconnected.
+    window.setInterval(function() {
+        if (!suppressWebGamepad && appForeground && !rafId) {
+            updateLoop();
+        }
+    }, 500);
 
     updateLoop();
 })();";
@@ -683,6 +765,12 @@ namespace Youtube_TV.Desktop.Input
                 return true;
             }
 
+            IntPtr rootOwner = GetAncestor(fg, GaRootOwner);
+            if (rootOwner == _windowHandle)
+            {
+                return true;
+            }
+
             uint fgPid;
             GetWindowThreadProcessId(fg, out fgPid);
             if (fgPid == _currentProcessId)
@@ -695,7 +783,25 @@ namespace Youtube_TV.Desktop.Input
                 return true;
             }
 
+            // In Windows 11 Xbox Mode, hidden or zero-size shell/WebView helper windows can
+            // transiently hold GetForegroundWindow() while TubeTV remains visibly fullscreen.
+            if (!IsWindowVisible(fg) || IsEmptyWindowRect(fg))
+            {
+                return true;
+            }
+
             return false;
+        }
+
+        private static bool IsEmptyWindowRect(IntPtr hWnd)
+        {
+            NativeRect rect;
+            if (!GetWindowRect(hWnd, out rect))
+            {
+                return false;
+            }
+
+            return (rect.Right - rect.Left) <= 0 || (rect.Bottom - rect.Top) <= 0;
         }
 
         private int ReadNativeControllers(out ControllerReading combined)
@@ -737,6 +843,8 @@ namespace Youtube_TV.Desktop.Input
                 }
             }
 
+            _lastXInputCount = xInputCount;
+            _lastWgiCount = wgiCount;
             combined = ControllerInputProcessor.CombineReadings(_readingScratch);
             return xInputCount > wgiCount ? xInputCount : wgiCount;
         }
