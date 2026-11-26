@@ -8,17 +8,40 @@ This UWP application is a simple WebView2 frame that uses a custom User Agent St
 
 # Installation
 
-Download the installer from here: https://github.com/marticliment/Youtube-TV-Client/releases/download/1.1.0.0/9932MartCliment.YoutubeTVClient_1.1.0.0_neutral_._g91dtg5srk15g.Msixbundle
+### Windows Desktop Installer (`.exe` — Recommended, no sideloading certificate required)
+- Push to `main`, push a version tag (e.g. `v2.0.0`), or trigger the **Build Windows Installer** workflow in GitHub Actions to generate:
+  - `TubeTV-Setup-<version>-x64.exe` — self-contained Windows installer (no .NET install required; uses Windows' built-in Edge WebView2 Runtime)
+  - `TubeTV-Portable-<version>-x64.zip` — portable build for launchers like Armoury Crate SE, Playnite, or Steam
+
+### Legacy UWP Package (`.msixbundle`)
+Download the original UWP release from here: https://github.com/marticliment/Youtube-TV-Client/releases/download/1.1.0.0/9932MartCliment.YoutubeTVClient_1.1.0.0_neutral_._g91dtg5srk15g.Msixbundle
 <br>
 
 # Usage
-Use it as you would use YouTube TV. Use the arrows on your keyboard to navigate across the whole interface, and use <kbd>Enter</kbd> as the Ok button.
+Use it as you would use YouTube TV. Use the arrows on your keyboard to navigate across the whole interface, use <kbd>Enter</kbd> as the Ok button, and press <kbd>F11</kbd> or <kbd>Alt</kbd>+<kbd>Enter</kbd> to toggle fullscreen.
 
 Navigation can also be done with the mouse cursor and scroll wheel, but it is trickier.
 
 You can also link YouTube TV to your phone as if it was a regular TV app, and then cast videos to it.
 
 When searching for videos, typing with your keyboard will work, but note that **pressing the enter key will type the selected character**. Results are loaded automatically, you just need to scroll down in order to see them.
+
+# Controller Support
+Built-in gamepad support works out of the box for couch PCs and Windows handhelds (such as **ASUS ROG Ally**, **Lenovo Legion Go**, and **Steam Deck on Windows**), supporting Xbox/XInput controllers natively (`XInput` on Desktop / `Windows.Gaming.Input` on UWP) as well as direct USB/Bluetooth PlayStation (DualSense / DualShock 4) and Nintendo Switch Pro controllers via the built-in Web Gamepad bridge. Multiple controllers can be used simultaneously (e.g., a docked handheld and a wireless couch controller), and controller input automatically pauses when the app is not in focus.
+
+| Controller Input | Action |
+| --- | --- |
+| **D-Pad / Left Stick** | Navigate (hold to repeat) |
+| **A / Cross** | Select / OK (hold for YouTube TV options menu) |
+| **B / Circle** | Back / Close overlay / Exit video |
+| **X / Square / Menu (Start)** | Play / Pause |
+| **Y / Triangle** | Open Search |
+| **LT / RT** | Rewind / Fast Forward (hold to repeat) |
+| **LB / RB** | Previous / Next Video |
+| **Right Stick Up / Down** | Volume Up / Down |
+| **R3 (Right Stick Click)** | Mute / Unmute |
+| **View / Select** | Toggle Fullscreen |
+| **L3 (Left Stick Click)** | Show / Hide Controller Controls Overlay |
 
 # FAQ
 **Q: Maximum resolution is limited to a lower resulution**<br>

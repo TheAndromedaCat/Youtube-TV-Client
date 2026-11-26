@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>TubeTV</AssemblyName>
+    <RootNamespace>Youtube_TV.Desktop</RootNamespace>
+    <ApplicationIcon>..\Assets\TubeTV.ico</ApplicationIcon>
+    <Product>TubeTV - Client for YouTube TV</Product>
+    <Description>Unofficial YouTube TV desktop client for Windows PCs, couch PCs, and handheld gaming devices</Description>
+    <Version>2.0.0</Version>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Input\ControllerInputProcessor.cs" Link="Input\ControllerInputProcessor.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
+  </ItemGroup>
+
+</Project>

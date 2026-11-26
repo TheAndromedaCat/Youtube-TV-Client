@@ -1,0 +1,23 @@
+<Window x:Class="Youtube_TV.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="TubeTV - Client for YouTube TV"
+        Width="1280"
+        Height="720"
+        MinWidth="640"
+        MinHeight="360"
+        WindowStartupLocation="CenterScreen"
+        Background="#0F0F0F">
+    <Grid Background="#0F0F0F">
+        <TextBlock x:Name="LoadingText"
+                   Text="Please wait, loading YouTube TV..."
+                   Foreground="White"
+                   FontSize="32"
+                   FontWeight="Bold"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center" />
+        <wv2:WebView2 x:Name="webView"
+                      Visibility="Hidden" />
+    </Grid>
+</Window>
