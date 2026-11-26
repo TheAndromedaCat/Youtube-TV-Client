@@ -94,6 +94,7 @@ namespace Youtube_TV.Desktop
         private static extern IntPtr SetFocus(IntPtr hWnd);
 
         private readonly DesktopGamepadService _gamepadService;
+        private readonly XboxTileArtworkService _xboxTileArtworkService;
         private readonly Dictionary<int, int> _heldVirtualKeyCounts = new Dictionary<int, int>();
 
         private IntPtr _windowHandle = IntPtr.Zero;
@@ -110,6 +111,9 @@ namespace Youtube_TV.Desktop
         public MainWindow()
         {
             InitializeComponent();
+
+            _xboxTileArtworkService = new XboxTileArtworkService();
+            _xboxTileArtworkService.StartWatching();
 
             _gamepadService = new DesktopGamepadService(Dispatcher);
             _gamepadService.ActionTriggered += GamepadService_ActionTriggered;
@@ -154,6 +158,7 @@ namespace Youtube_TV.Desktop
         private void MainWindow_Closed(object sender, EventArgs e)
         {
             _isClosed = true;
+            _xboxTileArtworkService.Dispose();
             _gamepadService.ActionTriggered -= GamepadService_ActionTriggered;
             _gamepadService.ForegroundChanged -= GamepadService_ForegroundChanged;
             _gamepadService.WebFallbackSuppressedChanged -= GamepadService_WebFallbackSuppressedChanged;
