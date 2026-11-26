@@ -1,5 +1,5 @@
 #ifndef AppVersion
-  #define AppVersion "2.0.2"
+  #define AppVersion "2.0.3"
 #endif
 
 #ifndef PublishDir
@@ -47,4 +47,5 @@ Name: "{autoprograms}\TubeTV"; Filename: "{app}\TubeTV.exe"
 Name: "{autodesktop}\TubeTV"; Filename: "{app}\TubeTV.exe"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\TubeTV.exe"; Parameters: "--sync-xbox-tile"; Flags: runhidden nowait
 Filename: "{app}\TubeTV.exe"; Description: "{cm:LaunchProgram,TubeTV}"; Flags: nowait postinstall skipifsilent
