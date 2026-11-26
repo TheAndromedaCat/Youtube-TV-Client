@@ -1,4 +1,4 @@
-﻿<Page
+<Page
     x:Class="Youtube_TV.MainPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -9,9 +9,122 @@
     xmlns:controls="using:Microsoft.UI.Xaml.Controls"
     Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
 
-    <Grid>
-        <Button HorizontalAlignment="Stretch" VerticalAlignment="Stretch" FontSize="40" FontWeight="Bold">Please wait, loading Youtube TV...</Button> <!-- This dummy button helps with WebView2 focusing issues -->
+    <Grid XYFocusKeyboardNavigation="Disabled">
+        <Button x:Name="LoadingButton" IsTabStop="False" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" FontSize="40" FontWeight="Bold">Please wait, loading Youtube TV...</Button> <!-- This dummy button helps with WebView2 focusing issues -->
         <controls:WebView2 Name="webView">
         </controls:WebView2>
+
+        <!-- Compact status / volume toast for couch & handheld controller feedback -->
+        <Border x:Name="StatusToast"
+                Visibility="Collapsed"
+                IsHitTestVisible="False"
+                RequestedTheme="Dark"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,40"
+                Padding="20,12"
+                CornerRadius="12"
+                Background="#E6181818"
+                BorderBrush="#40FFFFFF"
+                BorderThickness="1">
+            <StackPanel Orientation="Vertical" MinWidth="220">
+                <TextBlock x:Name="StatusToastText"
+                           Foreground="White"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center" />
+                <ProgressBar x:Name="StatusToastBar"
+                             Visibility="Collapsed"
+                             Minimum="0"
+                             Maximum="100"
+                             Value="100"
+                             Height="6"
+                             Margin="0,8,0,0"
+                             Foreground="#FFFF0000"
+                             Background="#40FFFFFF" />
+            </StackPanel>
+        </Border>
+
+        <!-- Toggleable Controller Help Overlay (L3 / Left Stick Click) -->
+        <Grid x:Name="ControlsHelpOverlay"
+              Visibility="Collapsed"
+              RequestedTheme="Dark"
+              Background="#CC000000"
+              Tapped="ControlsHelpOverlay_Tapped">
+            <Border HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    MaxWidth="760"
+                    Padding="32,28"
+                    CornerRadius="16"
+                    Background="#F2181818"
+                    BorderBrush="#33FFFFFF"
+                    BorderThickness="1">
+                <StackPanel Orientation="Vertical">
+                    <TextBlock Text="Controller Controls"
+                               Foreground="White"
+                               FontSize="26"
+                               FontWeight="Bold"
+                               Margin="0,0,0,6" />
+                    <TextBlock Text="Press L3 or B to close"
+                               Foreground="#B3FFFFFF"
+                               FontSize="15"
+                               Margin="0,0,0,20" />
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="200" />
+                            <ColumnDefinition Width="28" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="200" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Left Column -->
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="D-Pad / Left Stick" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" Text="Navigate" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="A / Cross" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Text="Select (hold for menu)" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="B / Circle" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Text="Back / Close" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="X / Square / Menu" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Text="Play / Pause" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="Y / Triangle" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Text="Search" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="View / Select" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,0" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Text="Toggle Fullscreen" Foreground="White" FontSize="16" Margin="0,0,0,0" />
+
+                        <!-- Right Column -->
+                        <TextBlock Grid.Row="0" Grid.Column="3" Text="LT / RT" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="0" Grid.Column="4" Text="Rewind / Fast Forward" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="1" Grid.Column="3" Text="LB / RB" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="1" Grid.Column="4" Text="Previous / Next Video" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="2" Grid.Column="3" Text="Right Stick Up/Down" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="2" Grid.Column="4" Text="Volume Up / Down" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="3" Grid.Column="3" Text="R3 (Right Stick)" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="3" Grid.Column="4" Text="Mute / Unmute" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+
+                        <TextBlock Grid.Row="4" Grid.Column="3" Text="L3 (Left Stick)" Foreground="#FFFF4E45" FontWeight="SemiBold" FontSize="16" Margin="0,0,16,12" />
+                        <TextBlock Grid.Row="4" Grid.Column="4" Text="Show / Hide Controls" Foreground="White" FontSize="16" Margin="0,0,0,12" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
     </Grid>
 </Page>

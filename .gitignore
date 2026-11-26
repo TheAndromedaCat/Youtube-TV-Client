@@ -1,5 +1,9 @@
 .vs/*
 bin/*
 obj/*
+Desktop/bin/*
+Desktop/obj/*
+publish/*
+dist/*
 AppPackages/*
 BundleArtifacts/*

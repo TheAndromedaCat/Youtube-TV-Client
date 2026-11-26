@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -30,6 +30,7 @@ namespace Youtube_TV
         public App()
         {
             this.InitializeComponent();
+            this.RequiresPointerMode = ApplicationRequiresPointerMode.WhenRequested;
             ApplicationView.PreferredLaunchWindowingMode = ApplicationViewWindowingMode.FullScreen;
             this.Suspending += OnSuspending;
         }
